@@ -1,0 +1,128 @@
+name: Build Linux Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux (Desktop & CLI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libfuse2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+
+      - name: Prepare missing build prerequisites
+        run: |
+          # 1. Create .github/TEAM_MEMBERS if not present
+          mkdir -p .github
+          [ -f .github/TEAM_MEMBERS ] || touch .github/TEAM_MEMBERS
+
+          # 2. Create install script at root if not present (required by desktop-cli service)
+          if [ ! -f install ]; then
+            cat << 'EOF' > install
+          #!/usr/bin/env bash
+          echo "olliEcode CLI Installer"
+          EOF
+            chmod +x install
+          fi
+
+          # 3. Create desktop resources & entry if not present
+          mkdir -p packages/desktop/resources/linux
+          if [ ! -f packages/desktop/resources/linux/opencode-desktop.desktop ]; then
+            cat << 'EOF' > packages/desktop/resources/linux/opencode-desktop.desktop
+          [Desktop Entry]
+          Name=olliEcode
+          Exec=opencode %U
+          Terminal=false
+          Type=Application
+          Icon=ai.opencode
+          StartupWMClass=ai.opencode.desktop
+          Comment=AI-powered development tool
+          Categories=Development;
+          EOF
+          fi
+
+      - name: Install project dependencies
+        run: bun install
+
+      - name: Build CLI (Linux x64)
+        run: |
+          OPENCODE_TARGET=linux-x64-baseline bun --cwd packages/cli build --skip-install
+
+      - name: Build Desktop (Production)
+        run: |
+          OPENCODE_CHANNEL=prod bun --cwd packages/desktop build
+
+      - name: Package Desktop (.AppImage, .deb, .rpm)
+        run: |
+          OPENCODE_CHANNEL=prod bun --cwd packages/desktop pack
+
+      - name: Organize build artifacts
+        run: |
+          mkdir -p dist-release/cli dist-release/desktop
+          
+          # Copy desktop packages (.AppImage, .deb, .rpm)
+          if [ -d dist/desktop ]; then
+            cp -r dist/desktop/* dist-release/desktop/ 2>/dev/null || true
+          fi
+          if [ -d packages/desktop/dist ]; then
+            cp packages/desktop/dist/*.AppImage dist-release/desktop/ 2>/dev/null || true
+            cp packages/desktop/dist/*.deb dist-release/desktop/ 2>/dev/null || true
+            cp packages/desktop/dist/*.rpm dist-release/desktop/ 2>/dev/null || true
+          fi
+
+          # Copy and package CLI
+          if [ -d packages/cli/dist/cli-linux-x64-baseline ]; then
+            mkdir -p dist-release/cli/olliecode-linux-x64
+            cp packages/cli/dist/cli-linux-x64-baseline/bin/opencode dist-release/cli/olliecode-linux-x64/olliecode
+            chmod +x dist-release/cli/olliecode-linux-x64/olliecode
+            tar -czvf dist-release/olliecode-cli-linux-x64.tar.gz -C dist-release/cli/olliecode-linux-x64 olliecode
+          fi
+
+          echo "=== Artifacts ready for upload ==="
+          ls -lh dist-release/
+          ls -lh dist-release/desktop/
+
+      - name: Upload Desktop Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: olliecode-desktop-linux
+          path: dist-release/desktop/*
+
+      - name: Upload CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: olliecode-cli-linux
+          path: dist-release/olliecode-cli-linux-x64.tar.gz
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-release/desktop/*
+            dist-release/olliecode-cli-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
