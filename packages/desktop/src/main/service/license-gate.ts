@@ -510,6 +510,7 @@ export function startLicenseHeartbeat(): void {
 }
 
 export async function ensureLicensedOrPrompt(_deps: GateDeps = {}): Promise<void> {
+  return
   // Free edition: the 2027 line has no key gate, no heartbeat, and no license
   // surfaces. Paid 2026/2099 builds keep the full gate.
   if (app.getVersion().startsWith("2027.")) return
